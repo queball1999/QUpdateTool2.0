@@ -1,0 +1,202 @@
+# QUpdateTool - example configuration
+#
+# Every value here has a command-line equivalent. Anything set in this file
+# can be overridden by a flag, EXCEPT fields a branded binary has locked at
+# build time (the pinned signing key and release source, plus anything the
+# brand's own `lock` list names). See docs/SECURITY.md.
+#
+# `lock` and `unlock` are NOT config.yaml settings - they are build-time
+# brand metadata (see examples/qsnippet-brand.yaml) and are stripped out if
+# present here, so a dropped-in config file can never grant itself authority
+# the binary didn't already give it.
+#
+# Drop this next to the updater binary as "config.yaml" and it is picked up
+# automatically, or point at it with --config.
+
+app:
+  name: MyApp
+  publisher: Example Ltd
+  # The version currently installed. A parent application normally passes
+  # this with --current-version rather than hardcoding it here.
+  current_version: "1.2.3"
+  # Used to stop the running application and to relaunch it afterwards.
+  executable: "C:/Program Files/MyApp/MyApp.exe"
+  # Extra process names to stop, beyond the executable itself.
+  process_names:
+    - MyApp.exe
+    - MyAppHelper.exe
+  support_url: https://example.com/support
+
+  # Defaults to the directory containing app.executable. Set this instead
+  # when that directory isn't the real install root, e.g. a macOS .app
+  # bundle mount point.
+  install_dir: ""
+
+  # Display-only; set by a branded build rather than by hand.
+  icon: ""
+  icon_data: ""
+  icon_format: ""
+
+source:
+  # github | gitea | forgejo | gitlab | generic
+  provider: github
+
+  # For github.com leave host unset. For GitHub Enterprise, Gitea, Forgejo,
+  # or self-hosted GitLab, point this at the instance.
+  #   host: https://git.example.com
+  host: ""
+
+  repo: exampleltd/myapp
+
+  # stable      only non-prerelease releases (default)
+  # prerelease  only prereleases, for a beta channel
+  # any         whichever release is newest
+  channel: stable
+
+  # Only consider tags matching this regex. Useful when one repository
+  # publishes several products.
+  tag_pattern: ""
+
+  # generic provider only: a static JSON manifest, or a direct artifact URL,
+  # to fetch instead of talking to a git host API. See docs/BACKENDS.md.
+  manifest_url: ""
+  download_url: ""
+
+  # NEVER put a token in a file that ships with the application. Name an
+  # environment variable instead; the updater reads it at runtime.
+  token_env: MYAPP_UPDATE_TOKEN
+  # token_file: /etc/myapp/update.token
+  # token: ""
+
+  timeout: 30
+  retries: 3
+  verify_tls: true
+  user_agent: "QUpdateTool/0.0.1"
+
+assets:
+  # Leave empty to let the updater pick using platform detection. It will
+  # choose the .deb on Debian, the .rpm on Fedora, the AppImage when the app
+  # is running as one, the installer on Windows, and the dmg on macOS.
+  preference: []
+
+  # Force a specific asset with a regex. Overrides all automatic selection.
+  pattern: ""
+  exclude_pattern: ""
+
+  # Filter out assets built for a different CPU architecture than this
+  # machine's (arm64 vs x86_64, etc).
+  match_arch: true
+
+  # Per-platform overrides, if one platform needs special handling.
+  windows:
+    pattern: ""
+    preference: []
+  linux:
+    pattern: ""
+    # Example: prefer AppImage over the system package on every distro
+    # preference: [appimage, deb, rpm, tar]
+    preference: []
+  macos:
+    pattern: ""
+    preference: []
+
+security:
+  # Refuse to install anything without a valid OpenPGP signature. Turning
+  # this off means the updater will install whatever the server sends.
+  require_signature: true
+  require_checksum: true
+
+  # The signed checksum manifest published with the release.
+  checksum_file: SHA256SUMS.txt
+
+  # Detached signature naming conventions to look for.
+  signature_suffixes: [".sig", ".asc"]
+
+  # The trusted key, either inline (ASCII-armored) or as a path to a key
+  # file. A branded binary pins this at build time; for an unbranded run,
+  # set one of the two here.
+  public_key: ""
+  public_key_file: ""
+
+  # Require the signing key to be one of these fingerprints. A second lock
+  # beyond the pinned key block.
+  allowed_fingerprints: []
+  #  - 0E33B487E4193A20AB494B29F70C9E44B78E7B7C
+
+  # Fall back to the gpg binary for key types the built-in verifier cannot
+  # handle (for example DSA). Never used to turn a failure into a pass.
+  allow_gpg_fallback: true
+
+install:
+  # silent       unattended, no user interaction (default)
+  # interactive  the user walks through the real installer UI
+  mode: silent
+
+  # auto    elevate only when the install directory is not writable
+  # always  always request elevation
+  # never   never elevate; fail if the install needs it
+  elevate: auto
+
+  # Flags passed to each installer type. The defaults target Inno Setup on
+  # Windows; override if your installer expects something else.
+  installer_args:
+    exe: ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"]
+    exe_interactive: []
+    msi: ["/quiet", "/norestart"]
+    msi_interactive: ["/passive"]
+
+  # Where archive and AppImage releases are unpacked. Defaults to the
+  # directory containing the executable.
+  target_dir: ""
+
+  # Where the download is staged. Defaults to a temporary directory.
+  download_dir: ""
+  keep_download: false
+
+process:
+  # PID of the application to stop. Normally passed with --calling-pid.
+  calling_pid: 0
+  stop_parent: true
+  stop_timeout: 30
+  force_after_timeout: true
+
+  relaunch: true
+  # Defaults to app.executable when empty.
+  relaunch_command: []
+  relaunch_args: []
+  wait_before_relaunch: 2
+
+notes:
+  # auto      notices, then changelog, then the release body (default)
+  # notices   a per-version YAML file in the repository
+  # changelog the matching section of CHANGELOG.md
+  # release   the release description on the git host
+  # none      no release notes
+  source: auto
+  notices_dir: notices
+  changelog_paths:
+    - CHANGELOG.md
+    - docs/CHANGELOG.md
+  # Git branch/ref to read notices and CHANGELOG.md from. Defaults to the
+  # repository's default branch.
+  branch: ""
+  max_length: 20000
+
+ui:
+  # The updater runs headless unless --gui is passed.
+  gui: false
+  confirm: false
+  window_title: ""
+  accent_color: ""
+  auto_close_seconds: 3
+
+logging:
+  # ERROR | WARNING | INFO | DEBUG - the same ladder the application uses.
+  level: INFO
+
+  # A file, or a directory to write "updater.log" into. Point this at the
+  # application own log directory so update logs sit beside application logs.
+  # Use "none" to disable file logging entirely.
+  file: ""
+
+  json: false
