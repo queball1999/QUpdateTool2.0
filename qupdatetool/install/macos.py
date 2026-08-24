@@ -24,7 +24,7 @@ from pathlib import Path
 
 from ..errors import InstallError
 from ..platforms import KIND_DMG, KIND_PKG, KIND_TARBALL, KIND_ZIP
-from .base import InstallResult, Installer
+from .base import Installer, InstallResult
 from .windows import check_archive_members
 
 DEFAULT_APPLICATIONS = Path("/Applications")

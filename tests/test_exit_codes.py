@@ -100,7 +100,7 @@ def test_unexpected_exception_does_not_report_install_failure(monkeypatch, tmp_p
     *check* phase - before anything was downloaded - told the user their
     install had failed when nothing was ever installed.
     """
-    import qupdatetool.cli as cli
+    from qupdatetool import cli
 
     def explode(*args, **kwargs):
         raise RuntimeError("something unforeseen")

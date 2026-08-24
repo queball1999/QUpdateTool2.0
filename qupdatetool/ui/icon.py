@@ -57,11 +57,10 @@ def resolve_icon(config):
 
         if raw:
             try:
-                handle = tempfile.NamedTemporaryFile(
+                with tempfile.NamedTemporaryFile(
                     suffix=f".{icon_format}", delete=False
-                )
-                handle.write(raw)
-                handle.close()
+                ) as handle:
+                    handle.write(raw)
                 _cached_temp_path = handle.name
 
                 icon = QIcon(_cached_temp_path)

@@ -23,15 +23,15 @@ BACKENDS = {
 }
 
 __all__ = [
+    "BACKENDS",
     "Asset",
+    "ForgejoBackend",
+    "GenericBackend",
+    "GitHubBackend",
+    "GitLabBackend",
+    "GiteaBackend",
     "Release",
     "ReleaseBackend",
-    "GitHubBackend",
-    "GiteaBackend",
-    "ForgejoBackend",
-    "GitLabBackend",
-    "GenericBackend",
-    "BACKENDS",
     "get_backend",
 ]
 

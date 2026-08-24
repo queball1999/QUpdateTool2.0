@@ -21,8 +21,8 @@ qupdatetool/integrity.py for why a self-check cannot do this job.
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import base64
+import datetime as dt
 import hashlib
 import json
 import shutil
@@ -33,7 +33,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from qupdatetool.brand import (  # noqa: E402
+from qupdatetool.brand import (
     compute_brand_hash,
     load_brand_file,
     locked_fields,

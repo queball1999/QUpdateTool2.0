@@ -409,7 +409,7 @@ def main(argv: list | None = None) -> int:
         print("Interrupted", file=sys.stderr)
         return ExitCode.CANCELLED
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - top-level handler, must not let anything escape
         logging_utils.get_logger().exception("Unhandled error")
         print(f"Unexpected error: {exc}", file=sys.stderr)
         return ExitCode.ERROR
@@ -491,7 +491,7 @@ def run_console(config, args) -> int:
         reporter.warn("Interrupted")
         return ExitCode.CANCELLED
 
-    except Exception as exc:  # unexpected: log it fully, report it briefly
+    except Exception as exc:  # noqa: BLE001 - unexpected: log it fully, report it briefly
         # ERROR, not INSTALL. An unexpected exception can come from anywhere,
         # including the check phase before anything has been downloaded, and
         # reporting it as an install failure would have the parent tell the
