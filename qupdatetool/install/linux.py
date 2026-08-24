@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ..errors import InstallError
 from ..platforms import KIND_APPIMAGE, KIND_DEB, KIND_RPM, KIND_TARBALL, KIND_ZIP
-from .base import InstallResult, Installer
+from .base import Installer, InstallResult
 from .windows import check_archive_members, copy_tree
 
 

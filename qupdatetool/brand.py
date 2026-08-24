@@ -243,6 +243,6 @@ def load_brand_file(path: str | Path) -> dict:
 
     data = yaml.safe_load(file_path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
-        raise ValueError(f"Brand file must contain a mapping: {file_path}")
+        raise TypeError(f"Brand file must contain a mapping: {file_path}")
 
     return data

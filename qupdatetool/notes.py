@@ -87,7 +87,7 @@ def fetch(config, backend, release, log=None) -> ReleaseNotes:
     for attempt in attempts:
         try:
             notes = attempt(config, backend, release)
-        except Exception as exc:  # notes are never worth failing an update over
+        except Exception as exc:  # noqa: BLE001 - notes are never worth failing an update over
             note(f"Could not read release notes ({attempt.__name__}): {exc}")
             continue
 

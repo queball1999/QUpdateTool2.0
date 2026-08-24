@@ -255,7 +255,7 @@ class Verifier:
                 "Signature verification is required but no trusted key is configured"
             )
 
-        checksums, checksum_asset = self.load_checksums(release, report, note)
+        checksums, _checksum_asset = self.load_checksums(release, report, note)
 
         if checksums:
             expected = checksums.get(asset.name)

@@ -9,7 +9,7 @@ flow never branches on sys.platform.
 from __future__ import annotations
 
 from ..errors import InstallError
-from .base import InstallResult, Installer
+from .base import Installer, InstallResult
 from .linux import LinuxInstaller
 from .macos import MacOSInstaller
 from .windows import WindowsInstaller
@@ -21,12 +21,12 @@ INSTALLERS = {
 }
 
 __all__ = [
-    "Installer",
+    "INSTALLERS",
     "InstallResult",
-    "WindowsInstaller",
+    "Installer",
     "LinuxInstaller",
     "MacOSInstaller",
-    "INSTALLERS",
+    "WindowsInstaller",
     "get_installer",
 ]
 

@@ -68,7 +68,7 @@ class UpdateWorker(QThread):
             self.failed.emit(str(exc), exc.exit_code)
         except UpdaterError as exc:
             self.failed.emit(str(exc), exc.exit_code)
-        except Exception as exc:  # never let a worker exception kill the GUI
+        except Exception as exc:  # noqa: BLE001 - never let a worker exception kill the GUI
             from ..errors import ExitCode
             from ..logging_utils import get_logger
 

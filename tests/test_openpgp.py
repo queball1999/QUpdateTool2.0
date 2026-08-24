@@ -20,6 +20,7 @@ import pytest
 from qupdatetool import openpgp
 from qupdatetool.errors import VerificationError
 
+
 def find_gpg() -> str | None:
     """
     Locate a gpg that understands this platform native paths.

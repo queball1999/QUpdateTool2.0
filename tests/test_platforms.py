@@ -194,11 +194,9 @@ def test_release_resolves_per_platform():
         ]
 
         ranked = sorted(
-            (
-                (preferences[family].index(platforms.classify_asset(name)), name)
-                for name in candidates
-                if platforms.classify_asset(name) in preferences[family]
-            )
+            (preferences[family].index(platforms.classify_asset(name)), name)
+            for name in candidates
+            if platforms.classify_asset(name) in preferences[family]
         )
 
         assert ranked, f"nothing resolved for {family}"

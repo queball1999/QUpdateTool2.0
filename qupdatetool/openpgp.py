@@ -30,7 +30,8 @@ from dataclasses import dataclass, field
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, utils as asym_utils
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding
+from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
 
 from .errors import VerificationError
@@ -439,7 +440,7 @@ def compute_fingerprint(body: bytes, version: int) -> bytes:
     """
     if version == 4:
         prefix = b"\x99" + struct.pack(">H", len(body))
-        return hashlib.sha1(prefix + body).digest()  # noqa: S324 - format-mandated
+        return hashlib.sha1(prefix + body).digest()  # format-mandated, not a security check
     if version == 6:
         prefix = b"\x9b" + struct.pack(">I", len(body))
         return hashlib.sha256(prefix + body).digest()

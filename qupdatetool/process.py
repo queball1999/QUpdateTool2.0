@@ -63,9 +63,7 @@ def find_processes(pid: int = 0, names: tuple = (), executable: str = "") -> lis
             process_exe = (info.get("exe") or "")
 
             matched = False
-            if pid and process_pid == pid:
-                matched = True
-            elif wanted_names and process_name in wanted_names:
+            if (pid and process_pid == pid) or (wanted_names and process_name in wanted_names):
                 matched = True
             elif wanted_exe and process_exe:
                 try:

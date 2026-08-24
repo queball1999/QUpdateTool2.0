@@ -361,13 +361,16 @@ class Config:
                 except re.error as exc:
                     raise ConfigError(f"Invalid regex in {field}", str(exc)) from exc
 
-        if self.get("security.require_signature") and not self.public_key_data:
-            if not self.get("security.allow_gpg_fallback"):
-                raise ConfigError(
-                    "Signature verification is required but no public key is configured",
-                    "Bake a key into the brand, set security.public_key_file, "
-                    "or pass --no-require-signature to accept unsigned releases",
-                )
+        if (
+            self.get("security.require_signature")
+            and not self.public_key_data
+            and not self.get("security.allow_gpg_fallback")
+        ):
+            raise ConfigError(
+                "Signature verification is required but no public key is configured",
+                "Bake a key into the brand, set security.public_key_file, "
+                "or pass --no-require-signature to accept unsigned releases",
+            )
 
 
 def load_yaml_file(path: str | os.PathLike) -> dict:

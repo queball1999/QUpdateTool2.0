@@ -28,7 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import notes as notes_module
-from . import platforms, version as version_module
+from . import platforms
+from . import version as version_module
 from .backends import get_backend
 from .download import Downloader, default_download_dir
 from .errors import CancelledError, ConfigError, NoReleaseError, UpdaterError

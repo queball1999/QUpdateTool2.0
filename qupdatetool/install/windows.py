@@ -17,7 +17,7 @@ from pathlib import Path
 
 from ..errors import InstallError
 from ..platforms import KIND_EXE_INSTALLER, KIND_MSI, KIND_ZIP
-from .base import InstallResult, Installer
+from .base import Installer, InstallResult
 
 # Silent-install flags by installer family. Inno and NSIS both accept /S but
 # Inno prefers /VERYSILENT, which also suppresses the progress window.
