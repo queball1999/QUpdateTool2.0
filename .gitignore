@@ -1,0 +1,24 @@
+# Generated brand payload - never commit; it pins one application into the build
+qupdatetool/_brand_data.py
+
+# Build output
+build/
+dist/
+*.spec
+*.sha256
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Pytest
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logging
+*.log
