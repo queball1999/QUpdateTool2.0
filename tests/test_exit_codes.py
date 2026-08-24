@@ -152,8 +152,6 @@ def test_no_gui_overrides_a_brand_that_defaults_gui_true(tmp_path, monkeypatch):
     forever waiting for someone to close it, since the caller wasn't watching
     for one. --no-gui is the explicit escape hatch for exactly that case.
     """
-    import argparse
-
     from qupdatetool import cli as cli_module
 
     parser = cli_module.build_parser()
