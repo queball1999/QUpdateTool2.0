@@ -29,6 +29,12 @@ MSI_SILENT = ["/quiet", "/norestart"]
 # 3010 means "success, a reboot is required", which is not an error.
 SUCCESS_EXIT_CODES = {0, 3010, 1641}
 
+# Backup folders copy_tree creates inside an install while it replaces files.
+BACKUP_PREFIX = ".qupdate-backup-"
+# A backup that a failed rollback could not fully put back. Never removed
+# automatically: it holds the only copy of the files it lists.
+RESTORE_PREFIX = ".qupdate-restore-"
+
 
 class WindowsInstaller(Installer):
     """Applies Windows release artifacts."""
@@ -210,30 +216,141 @@ def copy_tree(source: Path, target: Path, log=None) -> int:
 
     Files are replaced individually rather than the directory being wiped
     first, so user data living alongside the application survives an update.
+
+    The copy is all or nothing. Each file about to be overwritten is first
+    moved into a backup folder inside the target, and if any later file
+    cannot be written (locked, no permission, disk full) every change is
+    undone: new files and folders are removed and the originals moved back.
+    Without this, a file locked halfway through would leave some files from
+    the new version beside some from the old one, which is an install that
+    may not start at all.
+
+    The backup lives inside the target so moving a file there is a rename on
+    the same volume. That also means a running executable can be replaced:
+    Windows refuses to overwrite one, but allows renaming it.
     """
+    remove_stale_backups(target, log)
+    backup_root = Path(tempfile.mkdtemp(prefix=BACKUP_PREFIX, dir=target))
+
+    replaced = []        # (destination, backup) for each file moved aside
+    created_files = []   # files that did not exist before
+    created_dirs = []    # folders that did not exist before, parents first
     count = 0
 
-    for root, _, filenames in os.walk(source):
-        root_path = Path(root)
-        relative = root_path.relative_to(source)
-        destination_dir = target / relative
-        destination_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        for root, _, filenames in os.walk(source):
+            root_path = Path(root)
+            relative = root_path.relative_to(source)
+            destination_dir = target / relative
+            make_dirs(destination_dir, target, created_dirs)
 
-        for filename in filenames:
-            source_file = root_path / filename
-            destination_file = destination_dir / filename
+            for filename in filenames:
+                source_file = root_path / filename
+                destination_file = destination_dir / filename
 
-            try:
+                if destination_file.exists() or destination_file.is_symlink():
+                    backup = backup_root / relative / filename
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(destination_file, backup)
+                    replaced.append((destination_file, backup))
+                else:
+                    # Recorded before the copy, so a partly written file is
+                    # removed on rollback too.
+                    created_files.append(destination_file)
+
                 shutil.copy2(source_file, destination_file)
                 count += 1
-            except PermissionError as exc:
-                raise InstallError(
-                    f"Could not replace {destination_file.name}",
-                    "The file is in use or the updater lacks permission: "
-                    f"{exc}",
-                ) from exc
+    except OSError as exc:
+        name = Path(exc.filename).name if exc.filename else "a file"
+        unrestored = roll_back(replaced, created_files, created_dirs)
+
+        if unrestored:
+            # Renamed out of BACKUP_PREFIX so the next update's stale-backup
+            # sweep doesn't delete the only copy of those originals.
+            kept = backup_root.with_name(
+                RESTORE_PREFIX + backup_root.name[len(BACKUP_PREFIX):]
+            )
+            try:
+                os.replace(backup_root, kept)
+                backup_root = kept
+            except OSError:
+                pass
+            raise InstallError(
+                f"Could not replace {name}, and the previous version could "
+                "not be fully restored",
+                f"{exc}. Originals of {len(unrestored)} files are still in "
+                f"{backup_root}; copy them back by hand",
+            ) from exc
+
+        shutil.rmtree(backup_root, ignore_errors=True)
+        raise InstallError(
+            f"Could not replace {name}",
+            "The file is in use or the updater lacks permission. Nothing was "
+            f"changed; the previous version is intact. {exc}",
+        ) from exc
+
+    # A renamed executable that is still running cannot be deleted yet; the
+    # next update removes whatever is left.
+    shutil.rmtree(backup_root, ignore_errors=True)
 
     if log:
         log(f"Copied {count} files into {target}")
 
     return count
+
+
+
+def make_dirs(directory: Path, root: Path, created: list) -> None:
+    """
+    Create directory and any missing parents below root, recording each
+    folder created so a rollback can remove it again.
+    """
+    missing = []
+    current = directory
+    while current != root and not current.is_dir():
+        missing.append(current)
+        current = current.parent
+
+    for folder in reversed(missing):
+        folder.mkdir()
+        created.append(folder)
+
+
+def roll_back(replaced: list, created_files: list, created_dirs: list) -> list:
+    """
+    Undo a partial copy_tree: remove the files and folders it added, then move
+    each original back. Returns the originals that could not be restored.
+    """
+    for path in reversed(created_files):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    unrestored = []
+    for destination, backup in reversed(replaced):
+        try:
+            os.replace(backup, destination)
+        except OSError:
+            unrestored.append(destination)
+
+    # Deepest first; a folder that still holds something is left alone.
+    for folder in reversed(created_dirs):
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
+
+    return unrestored
+
+
+def remove_stale_backups(target: Path, log=None) -> None:
+    """
+    Delete backup folders left by an earlier update, typically because they
+    held the old copy of an executable that was still running at the time.
+    """
+    for entry in target.glob(BACKUP_PREFIX + "*"):
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+            if log and entry.exists():
+                log(f"Could not remove old backup {entry}")
