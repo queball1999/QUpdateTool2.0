@@ -1,4 +1,4 @@
-.PHONY: help venv recreate-venv install install-gui test test-pgp lint format check build build-gui brand clean
+.PHONY: help venv recreate-venv install install-gui test test-pgp lint format check setup build build-gui brand clean
 
 VENV_DIR := .venv
 
@@ -31,6 +31,7 @@ ifeq ($(OS),Windows_NT)
 	@echo   make lint           - Run ruff
 	@echo   make format         - Run ruff format
 	@echo   make check          - Live --check-only run (set REPO=owner/name)
+	@echo   make setup          - Launch the graphical setup wizard (--setup)
 	@echo   make build          - Build an unbranded headless binary
 	@echo   make build-gui      - Build an unbranded binary with GUI support
 	@echo   make brand          - Build a branded binary (set BRAND=, ICON=, KEY=, OUT=)
@@ -46,6 +47,7 @@ else
 	@echo "  make lint           - Run ruff"
 	@echo "  make format         - Run ruff format"
 	@echo "  make check          - Live --check-only run (set REPO=owner/name)"
+	@echo "  make setup          - Launch the graphical setup wizard (--setup)"
 	@echo "  make build          - Build an unbranded headless binary"
 	@echo "  make build-gui      - Build an unbranded binary with GUI support"
 	@echo "  make brand          - Build a branded binary (set BRAND=, ICON=, KEY=, OUT=)"
@@ -94,6 +96,9 @@ check:
 		--provider github --repo $(REPO) \
 		--app-name SmokeTest --current-version 0.0.0 \
 		--log-file none
+
+setup:
+	$(PYTHON) -m qupdatetool --setup
 
 build:
 	$(PYTHON) tools/build_branded.py --brand $(BRAND) --clean

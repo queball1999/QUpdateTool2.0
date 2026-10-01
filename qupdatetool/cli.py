@@ -14,9 +14,9 @@ import argparse
 import json
 import sys
 
+from . import __version__, app_settings, integrity, logging_utils
 from . import brand as brand_module
 from . import config as config_module
-from . import integrity, logging_utils
 from .errors import CancelledError, ExitCode, UpdaterError
 from .updater import build_updater
 
@@ -82,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Print the updater version and exit")
     parser.add_argument("--self-check", action="store_true",
                         help="Report this binary hash, brand, and code signature, then exit")
+    parser.add_argument("--setup", action="store_true",
+                        help="Open the graphical setup wizard to build a config.yaml "
+                             "(and optionally a branded CI build) for integrating "
+                             "QUpdateTool into an app, then exit. Requires PySide6.")
 
     application = parser.add_argument_group("application")
     application.add_argument("--app-name", metavar="NAME",
@@ -373,6 +377,26 @@ def main(argv: list | None = None) -> int:
 
     if args.self_check:
         return print_self_check(as_json=args.json)
+
+    if args.setup:
+        # The wizard logs to QUpdateTool's own log, configured from its own
+        # settings file (created on first run) - not from an update config,
+        # which is what the wizard is editing. Logging flags still win.
+        settings = app_settings.load(create=True)
+        logging_utils.configure(
+            level=args.log_level or settings["log_level"],
+            log_file=args.log_file or app_settings.setup_log_path(settings),
+            app_name="QUpdateTool",
+            console=not args.no_log_console and not args.quiet,
+            json_format=bool(args.log_json),
+        )
+        logging_utils.get_logger("setup").info(
+            "QUpdateTool %s setup, settings %s", __version__, app_settings.settings_path()
+        )
+
+        from .ui.setup import run_setup_wizard
+
+        return run_setup_wizard(args.config or "", settings)
 
     try:
         overrides = collect_overrides(args, parser)
