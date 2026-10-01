@@ -21,6 +21,7 @@ Full docs: **[QUpdateTool wiki](https://github.com/queball1999/QUpdateTool2.0/wi
 - **Stops and restarts the parent application** cleanly, including waiting out Windows file locks
 - **[Release notes](https://github.com/queball1999/QUpdateTool2.0/wiki/RELEASE_NOTES)** pulled from a `notices/` folder, a CHANGELOG, or the release body
 - **Configured by flags, a `config.yaml`, or a baked-in brand** - or any mix
+- **Graphical setup wizard** (`--setup`) - builds a `config.yaml` and CI workflow interactively, with a live connection test and a demo of the update dialogs
 
 ## Quick start
 
@@ -57,6 +58,36 @@ setting, fully commented.
 
 See [DEV_GUIDE](https://github.com/queball1999/QUpdateTool2.0/wiki/DEV_GUIDE)
 for a full walkthrough of integrating this into an app, including CI/CD.
+
+## Setup wizard
+
+`updater --setup` opens a graphical wizard that walks through every
+`config.yaml` section, validates it against your machine (paths, running
+processes, and a real read-only connection check against your release
+source), and lets you see the actual update dialogs fire - including
+success, up-to-date, and failure states - without downloading or installing
+anything. At the end it exports `config.yaml`, and optionally a brand file
+plus a GitHub Actions workflow that builds a branded `updater.exe`, bundled
+with a generated `README.md` covering the remaining manual steps.
+
+```bash
+pip install -r requirements-gui.txt   # needs PySide6, same as --gui
+python -m qupdatetool --setup
+
+# Edit an existing config instead of starting from scratch
+python -m qupdatetool --setup --config config.yaml
+```
+
+It's a dev-time tool only - it has no effect on `--check-only`/`--gui`
+runtime behaviour and writes nothing until you explicitly save from its
+Export page.
+
+The wizard keeps QUpdateTool's own settings (log level, log file, theme,
+accent colour) in `%LOCALAPPDATA%\QUpdateTool\config.yaml`
+(`~/.config/QUpdateTool/config.yaml` on Linux), created on first run, and
+logs every step, check and save to `logs/setup.log` beside it. `--log-level`
+and `--log-file` override both for one run. The update window follows the
+same theme setting but never creates that file.
 
 ## How an application uses it
 
@@ -209,6 +240,7 @@ qupdatetool/
   backends/         github, gitea, forgejo, gitlab, generic
   install/          windows, linux, macos installers
   ui/               optional Qt progress window
+  ui/setup/         the --setup wizard (config.yaml/brand/CI generator, demo mode)
 tools/
   build_branded.py  branded binary builder
 ```

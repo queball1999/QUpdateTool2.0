@@ -63,12 +63,23 @@ def run_gui(config, args) -> int:
 
     from PySide6.QtWidgets import QApplication
 
+    from .. import app_settings
     from .icon import resolve_icon
+    from .theme import apply_theme
     from .window import UpdaterWindow
 
     application = QApplication.instance() or QApplication(sys.argv[:1])
     application.setApplicationName(config.app_name)
     application.setApplicationDisplayName(config.app_name)
+
+    # Read-only: an update run never creates QUpdateTool's settings file on
+    # an end user's machine. The app's own accent colour wins over it.
+    settings = app_settings.load(create=False)
+    apply_theme(
+        application,
+        settings["theme"],
+        config.get("ui.accent_color", "") or settings["accent_color"],
+    )
 
     if config.get("app.publisher"):
         application.setOrganizationName(config.get("app.publisher"))
