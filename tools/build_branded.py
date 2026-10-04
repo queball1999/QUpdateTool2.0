@@ -366,7 +366,9 @@ def main() -> int:
     for warning in warnings:
         print(f"WARNING: {warning}", file=sys.stderr)
 
-    icon = Path(args.icon).expanduser() if args.icon else None
+    # Resolved here because PyInstaller resolves a relative --icon against its
+    # --specpath (build/), not the directory this script was run from.
+    icon = Path(args.icon).expanduser().resolve() if args.icon else None
     if icon and not icon.is_file():
         print(f"WARNING: icon not found: {icon}", file=sys.stderr)
         icon = None

@@ -709,8 +709,13 @@ def verify_with_key(key: PublicKey, signature: Signature, message: bytes) -> Non
             public_key = RSAPublicNumbers(
                 e=key.key_material["e"], n=key.key_material["n"]
             ).public_key()
+            # An MPI drops leading zero bytes, but cryptography rejects an RSA
+            # signature shorter than the modulus. Without this, about one
+            # signature in 256 (any whose first byte is 0x00) fails to verify.
+            modulus_length = (public_key.key_size + 7) // 8
+            signature_bytes = signature.signature_material["s"].rjust(modulus_length, b"\x00")
             public_key.verify(
-                signature.signature_material["s"],
+                signature_bytes,
                 digest,
                 padding.PKCS1v15(),
                 asym_utils.Prehashed(hash_class()),
