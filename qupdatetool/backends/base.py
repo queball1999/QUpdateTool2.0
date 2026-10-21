@@ -184,18 +184,24 @@ class ReleaseBackend:
         """Return releases newest-first. Implemented by each backend."""
         raise NotImplementedError
 
-    def latest_release(self) -> Release | None:
+    def candidate_releases(self) -> list:
         """
-        Return the newest release matching the configured channel and filters.
+        Return the releases matching the configured channel and filters, newest first.
 
         Drafts are always skipped. Pre-releases are included only when the
         channel asks for them, so a stable-channel user is never offered an
-        rc build by accident.
+        rc build by accident. The list is fetched once per run: the update
+        check and the patch planner both read it.
         """
+        cached = getattr(self, "_candidates", None)
+        if cached is not None:
+            return cached
+
         channel = (self.config.get("source.channel") or "stable").lower()
         tag_pattern = self.config.get("source.tag_pattern", "")
         matcher = re.compile(tag_pattern) if tag_pattern else None
 
+        candidates = []
         for release in self.fetch_releases():
             if release.draft:
                 continue
@@ -205,9 +211,15 @@ class ReleaseBackend:
                 continue
             if matcher and not matcher.search(release.tag):
                 continue
-            return release
+            candidates.append(release)
 
-        return None
+        self._candidates = candidates
+        return candidates
+
+    def latest_release(self) -> Release | None:
+        """Return the newest release matching the configured channel and filters."""
+        candidates = self.candidate_releases()
+        return candidates[0] if candidates else None
 
     def fetch_text_file(self, path: str, ref: str = "") -> str:
         """

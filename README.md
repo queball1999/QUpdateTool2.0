@@ -165,6 +165,35 @@ next one. An application shipping only `.deb` today keeps working unchanged
 when it starts publishing `.rpm` and `.AppImage` tomorrow - no updater change
 is needed, because the host detection already looks for them.
 
+## Patch updates
+
+Optional, per application (`patches.enabled` or `--patches`). Instead of the
+full installer, the updater downloads only the files that changed, the way
+Discord and Squirrel-based apps update.
+
+1. **Publish** a patch with each release, made from the previous release:
+
+   ```bash
+   python tools/make_patch.py --old MyApp-1.1.0-portable.zip --new MyApp-1.2.0-portable.zip \
+       --app MyApp --from v1.1.0 --to v1.2.0 --os windows --arch x64 --out dist/
+   # -> dist/MyApp-v1.2.0-windows-x64.from-v1.1.0.qpatch
+   ```
+
+   Upload it beside the installer and include it in the signed `SHA256SUMS.txt`.
+2. **Check**: `--check-only --json` reports `update_method` (`patch` or `full`),
+   `download_size` and the `patches` chain.
+3. **Update**: every patch in the chain is downloaded and signature-verified
+   first. Then, one at a time: confirm the installed files match the patch's
+   starting version, swap the changed files in, and hash the result. Each patch
+   is all or nothing, so a failure leaves the last complete version.
+4. **Fallback**: no patch route, a modified install, a read-only install
+   folder, interactive mode or an AppImage all use the full installer instead
+   (`patches.fallback_to_full: false` turns that into an error).
+
+Patches replace whole files; no binary diffing. For a typical bundled app the
+runtime libraries never change between releases, so the patch is mostly
+the executable.
+
 ## Security
 
 Signature verification is **enforced by default** and implemented in pure
@@ -231,6 +260,7 @@ qupdatetool/
   integrity.py      binary hashing and code-signature checks
   openpgp.py        pure-Python OpenPGP verifier
   verify.py         the checksum + signature chain
+  patch.py          .qpatch format: build, plan a chain, apply all or nothing
   download.py       streaming downloads with progress
   process.py        stopping and relaunching the parent app
   elevate.py        UAC / pkexec / sudo elevation
@@ -243,6 +273,7 @@ qupdatetool/
   ui/setup/         the --setup wizard (config.yaml/brand/CI generator, demo mode)
 tools/
   build_branded.py  branded binary builder
+  make_patch.py     builds a .qpatch between two releases (stdlib only)
 ```
 
 ## Licence

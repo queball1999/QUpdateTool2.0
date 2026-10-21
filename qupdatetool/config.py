@@ -110,6 +110,15 @@ DEFAULTS = {
         "keep_download": False,
         "download_dir": "",
     },
+    "patches": {
+        "enabled": False,               # use .qpatch assets when a release publishes them
+        "pattern": "",                  # regex a patch asset name must match
+        "max_chain": 10,                # most patches applied in one update
+        "max_size_ratio": 0.9,          # full download instead if patches exceed this share of it
+        "verify": "full",               # full | changed: what is re-hashed after each patch
+        "fallback_to_full": True,       # a patch that cannot be applied falls back to the installer
+        "windows_uninstall_key": "",    # HKCU/HKLM uninstall key whose DisplayVersion follows patches
+    },
     "process": {
         "calling_pid": 0,
         "stop_parent": True,
@@ -353,7 +362,25 @@ class Config:
                 "Expected one of: auto, always, never",
             )
 
-        for field in ("assets.pattern", "assets.exclude_pattern", "source.tag_pattern"):
+        verify = (self.get("patches.verify") or "").lower()
+        if verify not in ("full", "changed"):
+            raise ConfigError(
+                f"Unknown patch verification scope: {verify}",
+                "Expected one of: full, changed",
+            )
+
+        try:
+            max_chain = int(self.get("patches.max_chain", 10))
+            ratio = float(self.get("patches.max_size_ratio", 0.9))
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("patches.max_chain and patches.max_size_ratio must be numbers") from exc
+        if max_chain < 1 or ratio <= 0:
+            raise ConfigError(
+                "patches.max_chain must be at least 1 and patches.max_size_ratio above 0"
+            )
+
+        for field in ("assets.pattern", "assets.exclude_pattern", "source.tag_pattern",
+                      "patches.pattern"):
             pattern = self.get(field, "")
             if pattern:
                 try:

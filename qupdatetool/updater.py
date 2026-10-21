@@ -16,6 +16,13 @@ The order below is deliberate and each step guards the next:
     install    hand the artifact to the platform installer
     relaunch   start the parent application again
 
+When patches are enabled and the releases between the installed version and
+the latest publish them, download and verify fetch every patch in the chain
+instead, and install applies them one at a time, each checked against the
+hashes it carries before the next begins. A patch that cannot be applied
+leaves the last good version in place and, by default, falls back to the full
+installer. See patch.py.
+
 Verification sits before anything destructive happens. The application is not
 stopped, and nothing is written to the install directory, until the
 downloaded bytes have been proven to come from the holder of the pinned
@@ -28,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import notes as notes_module
+from . import patch as patch_module
 from . import platforms
 from . import version as version_module
 from .backends import get_backend
@@ -53,9 +61,11 @@ class UpdateCheck:
     notes: notes_module.ReleaseNotes = None
     platform_description: str = ""
     reason: str = ""
+    patch_plan = None
 
     def to_dict(self) -> dict:
         """Render as JSON-friendly data for a parent application to parse."""
+        plan = self.patch_plan
         return {
             "update_available": self.available,
             "current_version": self.current_version,
@@ -71,6 +81,9 @@ class UpdateCheck:
             "notes": self.notes.body if self.notes else "",
             "notes_source": self.notes.source if self.notes else "",
             "reason": self.reason,
+            "update_method": "patch" if plan else "full",
+            "download_size": plan.size if plan else (self.asset.size if self.asset else 0),
+            "patches": [step.to_dict() for step in plan.steps] if plan else [],
         }
 
 
@@ -189,6 +202,7 @@ class Updater:
             asset, kind = self.select_asset(release)
             check.asset = asset
             check.asset_kind = kind
+            check.patch_plan = self.plan_patches(check)
 
             if fetch_notes:
                 check.notes = notes_module.fetch(
@@ -217,10 +231,10 @@ class Updater:
                 f"Release {release.tag} has no downloadable assets"
             )
 
-        # Signature and checksum files are never install candidates.
+        # Signature and checksum files, and patches, are never install candidates.
         auxiliary_suffixes = tuple(
             self.config.get("security.signature_suffixes", [".sig", ".asc"])
-        ) + (".sha256", ".sha512", ".md5", ".txt")
+        ) + (".sha256", ".sha512", ".md5", ".txt", patch_module.PATCH_SUFFIX)
         candidates = [
             asset for asset in candidates
             if not asset.name.lower().endswith(auxiliary_suffixes)
@@ -302,6 +316,209 @@ class Updater:
             + ". Set assets.pattern to choose explicitly.",
         )
 
+    # --- patches ---
+
+    def plan_patches(self, check: UpdateCheck):
+        """
+        Work out whether this update can be applied as patches.
+
+        Returns a PatchPlan, or None for a full install. Never raises:
+        planning reads release metadata only, and a problem with it must not
+        turn a working update check into a failed one.
+        """
+        if not self.config.get("patches.enabled", False):
+            return None
+        if not check.current_version:
+            self.detail("Patches skipped: no current version to patch from")
+            return None
+        if (self.config.get("install.mode") or "silent").lower() == "interactive":
+            self.detail("Patches skipped: interactive installs run the full installer")
+            return None
+        if self.host.running_as_appimage:
+            self.detail("Patches skipped: an AppImage is replaced whole")
+            return None
+
+        try:
+            plan = patch_module.plan_chain(
+                self.backend.candidate_releases(),
+                check.current_version,
+                check.release,
+                self.host.os_family,
+                self.host.arch,
+                pattern=self.config.get("patches.pattern", ""),
+                max_steps=int(self.config.get("patches.max_chain", 10)),
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            logger.warning("Could not plan a patch update: %s", exc)
+            return None
+
+        if plan is None:
+            self.detail(
+                f"No patch route from {check.current_version} to {check.release.tag}; "
+                "the full installer will be used"
+            )
+            return None
+
+        full_size = check.asset.size if check.asset else 0
+        ratio = float(self.config.get("patches.max_size_ratio", 0.9))
+        if full_size and plan.size >= full_size * ratio:
+            self.detail(
+                f"Patches total {plan.size} bytes against {full_size} for the full "
+                "installer; the full installer will be used"
+            )
+            return None
+
+        self.detail(
+            f"Patch route: {check.current_version} -> "
+            + " -> ".join(step.to_version for step in plan.steps)
+            + f" ({plan.size} bytes)"
+        )
+        return plan
+
+    def patch_target(self) -> Path | None:
+        """The folder patches apply to: the same one an archive install unpacks into."""
+        target = self.config.get("install.target_dir", "") or self.config.install_dir
+        return Path(target) if target else None
+
+    def apply_patches(self, check: UpdateCheck) -> UpdateOutcome | None:
+        """
+        Download, verify and apply the planned patches in order.
+
+        Every patch is downloaded and its signature verified before anything
+        is stopped or changed, so a network or signature failure costs
+        nothing. Then each patch is applied and the install verified before
+        the next one starts. Returns None when the update should continue as
+        a full install instead.
+        """
+        from .elevate import can_write
+
+        plan = check.patch_plan
+        count = len(plan.steps)
+        fallback = bool(self.config.get("patches.fallback_to_full", True))
+        target = self.patch_target()
+        downloaded = []
+        report = None
+
+        try:
+            if target is None:
+                raise patch_module.PatchError(
+                    "Cannot patch: the install folder is unknown",
+                    "Pass --executable or set app.install_dir",
+                )
+            if not target.is_dir() or not can_write(target):
+                raise patch_module.PatchError(f"Cannot patch: {target} is not writable")
+
+            for index, step in enumerate(plan.steps, 1):
+                self.raise_if_cancelled()
+                downloaded.append(self.download_asset(step.asset, f"patch {index} of {count}"))
+                self.raise_if_cancelled()
+                self.status(f"Verifying patch {index} of {count}")
+                report = self.verifier.verify_release_artifact(
+                    step.release, downloaded[-1], step.asset, log=self.detail
+                )
+        except CancelledError:
+            self.cleanup_all(downloaded)
+            raise
+        except UpdaterError as exc:
+            self.cleanup_all(downloaded)
+            self.patch_fallback(exc, fallback)
+            return None
+
+        if self.config.get("meta.dry_run", False):
+            return UpdateOutcome(
+                success=True,
+                installed_version=check.latest_version,
+                method=f"dry run: {count} patch(es) downloaded and verified, nothing installed",
+                verification=report.describe(),
+                messages=[f"Patch left at {path}" for path in downloaded],
+            )
+
+        from . import process as process_module
+
+        messages = []
+        stopped = process_module.stop_parent(self.config, log=self.detail)
+        if stopped:
+            self.status(f"Stopped {', '.join(stopped)}")
+            messages.append(f"Stopped {', '.join(stopped)}")
+
+        current = check.current_version
+        try:
+            for index, (step, path) in enumerate(zip(plan.steps, downloaded), 1):
+                self.status(f"Applying patch {index} of {count} ({step.to_version})")
+                result = patch_module.apply_patch(
+                    path,
+                    target,
+                    expected_from=current,
+                    expected_to=step.to_version,
+                    verify=self.config.get("patches.verify", patch_module.VERIFY_FULL),
+                    log=self.detail,
+                )
+                current = step.to_version
+                self.status(f"Verified {current}: {result.verified} files match")
+                messages.append(
+                    f"Patched to {current}: {result.written} files written, "
+                    f"{result.deleted} removed"
+                )
+                self.record_installed_version(current)
+        except patch_module.PatchError as exc:
+            if current != check.current_version:
+                logger.warning("Patching stopped at %s", current)
+            if not fallback:
+                # Whatever version the chain reached is complete and
+                # verified, so the application can run while the error is
+                # reported.
+                self.relaunch(messages)
+            self.patch_fallback(exc, fallback)
+            return None
+        finally:
+            self.cleanup_all(downloaded)
+
+        relaunched = self.relaunch(messages)
+
+        return UpdateOutcome(
+            success=True,
+            installed_version=check.latest_version,
+            method=f"patched in place ({count} patch{'es' if count != 1 else ''}, "
+                   f"{plan.size / (1024 * 1024):.1f} MB)",
+            verification=report.describe(),
+            relaunched=relaunched,
+            messages=messages,
+        )
+
+    def patch_fallback(self, exc: UpdaterError, fallback: bool) -> None:
+        """Report a fall back to the full installer, or re-raise when fallback is off."""
+        if not fallback:
+            raise exc
+        logger.warning("Patch update failed, using the full installer: %s", exc)
+        self.status("Patching was not possible; installing the full update instead")
+
+    def record_installed_version(self, version: str) -> None:
+        """
+        Keep the Windows uninstall entry's version in step with a patch.
+
+        A full installer rewrites DisplayVersion itself; a patch does not run
+        the installer, so without this Apps & Features would keep showing the
+        version the patches started from.
+        """
+        key = self.config.get("patches.windows_uninstall_key", "")
+        if not key or self.host.os_family != "windows":
+            return
+        try:
+            import winreg
+        except ImportError:
+            return
+
+        display = version_module.strip_platform_suffix(version)
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, key, 0, winreg.KEY_SET_VALUE) as handle:
+                    winreg.SetValueEx(handle, "DisplayVersion", 0, winreg.REG_SZ, display)
+                self.detail(f"Uninstall entry now shows {display}")
+                return
+            except OSError:
+                continue
+        self.detail(f"Uninstall entry {key} not found; its version was not updated")
+
     # --- apply ---
 
     def apply(self, check: UpdateCheck | None = None) -> UpdateOutcome:
@@ -326,6 +543,11 @@ class Updater:
             raise NoReleaseError("No installable asset was selected")
 
         self.raise_if_cancelled()
+
+        if check.patch_plan:
+            outcome = self.apply_patches(check)
+            if outcome is not None:
+                return outcome
 
         artifact = self.download(check)
 
@@ -352,6 +574,10 @@ class Updater:
 
     def download(self, check: UpdateCheck) -> Path:
         """Download the selected artifact to the staging directory."""
+        return self.download_asset(check.asset)
+
+    def download_asset(self, asset, label: str = "") -> Path:
+        """Download one release asset to the staging directory."""
         directory = self.config.get("install.download_dir", "")
         target_dir = (
             Path(directory).expanduser()
@@ -360,17 +586,16 @@ class Updater:
         )
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        target = target_dir / check.asset.name
+        target = target_dir / asset.name
 
-        size_text = (
-            f" ({check.asset.size / (1024 * 1024):.1f} MB)" if check.asset.size else ""
-        )
-        self.status(f"Downloading {check.asset.name}{size_text}")
+        size_text = f" ({asset.size / (1024 * 1024):.1f} MB)" if asset.size else ""
+        prefix = f"Downloading {label}: " if label else "Downloading "
+        self.status(f"{prefix}{asset.name}{size_text}")
 
         return self.downloader.fetch_file(
-            check.asset.url,
+            asset.url,
             target,
-            expected_size=check.asset.size,
+            expected_size=asset.size,
             progress_callback=self.progress_callback,
         )
 
@@ -409,17 +634,7 @@ class Updater:
         self.status(f"Installed via {result.method}")
         messages.extend(result.notes)
 
-        relaunched = False
-        if result.success:
-            try:
-                relaunched = process_module.relaunch(self.config, log=self.detail)
-                if relaunched:
-                    self.status(f"Restarted {self.config.app_name}")
-            except UpdaterError as exc:
-                # The update itself succeeded; failing to relaunch is worth
-                # reporting but must not be reported as a failed update.
-                logger.warning("Could not relaunch: %s", exc)
-                messages.append(f"Could not relaunch automatically: {exc}")
+        relaunched = self.relaunch(messages) if result.success else False
 
         return UpdateOutcome(
             success=result.success,
@@ -430,6 +645,26 @@ class Updater:
             requires_restart=result.requires_restart,
             messages=messages,
         )
+
+    def relaunch(self, messages: list) -> bool:
+        """Start the parent application again, noting a failure in `messages`."""
+        from . import process as process_module
+
+        try:
+            relaunched = process_module.relaunch(self.config, log=self.detail)
+        except UpdaterError as exc:
+            # The update itself succeeded; failing to relaunch is worth
+            # reporting but must not be reported as a failed update.
+            logger.warning("Could not relaunch: %s", exc)
+            messages.append(f"Could not relaunch automatically: {exc}")
+            return False
+        if relaunched:
+            self.status(f"Restarted {self.config.app_name}")
+        return relaunched
+
+    def cleanup_all(self, artifacts: list) -> None:
+        for artifact in artifacts:
+            self.cleanup(artifact)
 
     def cleanup(self, artifact: Path) -> None:
         """Remove the downloaded artifact unless the config says to keep it."""
