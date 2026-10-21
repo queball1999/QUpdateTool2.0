@@ -169,6 +169,13 @@ def build_parser() -> argparse.ArgumentParser:
     install_group.add_argument("--already-elevated", action="store_true",
                                help=argparse.SUPPRESS)
 
+    patch_group = parser.add_argument_group("patch updates")
+    patch_group.add_argument("--patches", action="store_true",
+                             help="Apply .qpatch assets instead of the full installer when "
+                                  "the releases publish them")
+    patch_group.add_argument("--no-patches", action="store_true",
+                             help="Always download the full installer")
+
     process_group = parser.add_argument_group("parent process")
     process_group.add_argument("--calling-pid", type=int, metavar="PID",
                                help="PID of the application to stop before installing")
@@ -278,6 +285,12 @@ def collect_overrides(args, parser) -> dict:
 
     if args.keep_download:
         assign("install.keep_download", True)
+
+    # --no-patches wins a contradiction: the full installer is always safe.
+    if args.patches:
+        assign("patches.enabled", True)
+    if args.no_patches:
+        assign("patches.enabled", False)
 
     if args.no_stop:
         assign("process.stop_parent", False)

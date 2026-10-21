@@ -153,6 +153,24 @@ install:
   download_dir: ""
   keep_download: false
 
+# Patch updates: download only the files that changed instead of the whole
+# installer. A release publishes one or more <stem>.from-<tag>.qpatch assets
+# (built with tools/make_patch.py and listed in the signed SHA256SUMS.txt);
+# the updater chains them from the installed version to the latest, applies
+# each one all or nothing into the install directory, and verifies every file
+# before moving to the next. Anything unusual - no patch route, interactive
+# mode, an AppImage, an install that does not match - uses the full installer.
+patches:
+  enabled: false           # --patches / --no-patches
+  pattern: ""              # regex a patch asset name must match
+  max_chain: 10            # most patches applied in one update
+  max_size_ratio: 0.9      # full installer instead if patches total more than this share of it
+  verify: full             # full: hash every file after each patch; changed: only those written
+  fallback_to_full: true   # a patch that cannot be applied falls back to the installer
+  # Windows: the uninstall key whose DisplayVersion follows patched versions,
+  # e.g. Software\Microsoft\Windows\CurrentVersion\Uninstall\{GUID}_is1 for Inno Setup.
+  windows_uninstall_key: ""
+
 process:
   # PID of the application to stop. Normally passed with --calling-pid.
   calling_pid: 0
