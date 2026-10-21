@@ -105,7 +105,11 @@ DEFAULTS = {
             "exe_interactive": [],
             "msi": ["/quiet", "/norestart"],
             "msi_interactive": ["/passive"],
+            "exe_user": [],             # added for a per-user install, e.g. ["/CURRENTUSER"]
+            "exe_machine": [],          # added for a machine-wide install, e.g. ["/ALLUSERS"]
         },
+        "scope": "auto",                # auto | user | machine: see scope.py
+        "uninstall_key": "",            # Windows uninstall key, e.g. ...\Uninstall\{GUID}_is1
         "target_dir": "",               # zip/tar/appimage: where to unpack
         "keep_download": False,
         "download_dir": "",
@@ -117,7 +121,7 @@ DEFAULTS = {
         "max_size_ratio": 0.9,          # full download instead if patches exceed this share of it
         "verify": "full",               # full | changed: what is re-hashed after each patch
         "fallback_to_full": True,       # a patch that cannot be applied falls back to the installer
-        "windows_uninstall_key": "",    # HKCU/HKLM uninstall key whose DisplayVersion follows patches
+        "windows_uninstall_key": "",    # v0.0.3 name of install.uninstall_key; still read
     },
     "process": {
         "calling_pid": 0,
@@ -360,6 +364,13 @@ class Config:
             raise ConfigError(
                 f"Unknown elevation mode: {elevate}",
                 "Expected one of: auto, always, never",
+            )
+
+        scope = (self.get("install.scope") or "").lower()
+        if scope not in ("auto", "user", "machine"):
+            raise ConfigError(
+                f"Unknown install scope: {scope}",
+                "Expected one of: auto, user, machine",
             )
 
         verify = (self.get("patches.verify") or "").lower()
