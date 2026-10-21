@@ -59,12 +59,13 @@ def can_write(path: str | os.PathLike) -> bool:
         return False
 
 
-def needs_elevation(config, install_dir: str | os.PathLike | None) -> bool:
+def needs_elevation(config, install_dir: str | os.PathLike | None, scope: str = "") -> bool:
     """
     Decide whether this update requires elevated privileges.
 
-    "always" and "never" are honoured verbatim; "auto" checks whether the
-    install directory is writable and elevates only if it is not.
+    "always" and "never" are honoured verbatim; "auto" elevates for a
+    machine-wide install (see scope.py), and otherwise only when the install
+    directory is not writable.
     """
     mode = (config.get("install.elevate") or "auto").lower()
 
@@ -75,6 +76,9 @@ def needs_elevation(config, install_dir: str | os.PathLike | None) -> bool:
 
     if is_elevated():
         return False
+
+    if scope == "machine":
+        return True
 
     if not install_dir:
         return False

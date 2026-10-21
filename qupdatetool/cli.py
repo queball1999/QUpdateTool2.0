@@ -47,6 +47,7 @@ SIMPLE_FLAG_PATHS = {
     "pubkey_file": "security.public_key_file",
     "install_mode": "install.mode",
     "elevate": "install.elevate",
+    "install_scope": "install.scope",
     "target_dir": "install.target_dir",
     "download_dir": "install.download_dir",
     "calling_pid": "process.calling_pid",
@@ -160,6 +161,9 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Shorthand for --install-mode interactive")
     install_group.add_argument("--elevate", choices=["auto", "always", "never"],
                                help="When to request administrator privileges")
+    install_group.add_argument("--install-scope", choices=["auto", "user", "machine"],
+                               help="Whether the app was installed for this user or the whole "
+                                    "machine; decides elevation and the installer mode")
     install_group.add_argument("--target-dir", metavar="PATH",
                                help="Where to unpack archive and AppImage releases")
     install_group.add_argument("--download-dir", metavar="PATH",
@@ -435,6 +439,10 @@ def main(argv: list | None = None) -> int:
     # by decision. Catching it here makes the exit code deliberate and gives
     # the user a sentence instead of a stack trace.
     try:
+        elevated_exit = elevate_first(config, args)
+        if elevated_exit is not None:
+            return elevated_exit
+
         if config.get("ui.gui", False):
             from .ui.app import run_gui
 
@@ -493,7 +501,7 @@ def run_console(config, args) -> int:
                 reporter.warn("Update declined")
                 return ExitCode.CANCELLED
 
-        outcome = maybe_elevate_and_apply(config, updater, check, reporter, args)
+        outcome = updater.apply(check)
 
         reporter.finish_progress()
 
@@ -542,35 +550,56 @@ def run_console(config, args) -> int:
         return ExitCode.ERROR
 
 
-def maybe_elevate_and_apply(config, updater, check, reporter, args):
+def elevate_first(config, args) -> int | None:
     """
-    Apply the update, re-running elevated first if the install needs it.
+    Re-run the whole updater elevated when the install needs it.
 
-    Elevation is decided before the download rather than after, so the user
-    sees the UAC prompt up front instead of after waiting for a long download
-    that then cannot be installed.
+    Decided before the check, the window and the download, for the GUI and the
+    console alike, so the prompt comes first and the elevated instance does
+    all of the work: check, download, verify, install. Returns its exit code,
+    or None to carry on in this process.
+
+    The elevated instance never relaunches the application, because it would
+    start it as the administrator or root. This process, still running as
+    the user, relaunches it once the elevated one finishes - after a failed
+    install too, since the application was already stopped by then.
     """
-    from . import elevate
+    from . import elevate, platforms, process
+    from . import scope as scope_module
 
-    already = getattr(args, "already_elevated", False)
-    install_dir = config.install_dir
+    if (args.check_only or getattr(args, "already_elevated", False)
+            or config.get("meta.dry_run", False)):
+        return None
 
-    if not already and elevate.needs_elevation(config, install_dir):
-        reporter.status("This update needs administrator privileges")
+    host = platforms.detect(config.get("app.executable", ""))
+    scope = scope_module.detect(config, host.os_family)
+    if not elevate.needs_elevation(config, config.install_dir, scope):
+        return None
 
-        exit_code = elevate.relaunch_elevated(log=reporter.status)
-
-        # The elevated instance did the work; mirror its result.
-        from .updater import UpdateOutcome
-
-        return UpdateOutcome(
-            success=exit_code == ExitCode.SUCCESS,
-            installed_version=check.latest_version if exit_code == 0 else "",
-            method="applied by an elevated instance",
-            messages=[f"Elevated updater exited with code {exit_code}"],
+    log = logging_utils.get_logger("elevate")
+    log.info("The %s install needs elevated privileges", scope)
+    try:
+        exit_code = elevate.relaunch_elevated(
+            extra_args=("--no-relaunch", "--install-scope", scope), log=log.info
         )
+    except UpdaterError as exc:
+        print(f"Update failed: {exc}", file=sys.stderr)
+        return exc.exit_code
 
-    return updater.apply(check)
+    log.info("Elevated updater exited with code %s", exit_code)
+
+    if exit_code in (ExitCode.SUCCESS, ExitCode.INSTALL) and config.get("process.relaunch", True):
+        still_running = process.find_processes(
+            names=tuple(config.get("app.process_names", []) or ()),
+            executable=config.get("app.executable", ""),
+        )
+        if not still_running:
+            try:
+                process.relaunch(config, log=log.info)
+            except UpdaterError as exc:
+                log.warning("Could not relaunch: %s", exc)
+
+    return exit_code
 
 
 def run() -> None:

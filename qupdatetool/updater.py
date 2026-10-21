@@ -37,6 +37,7 @@ from pathlib import Path
 from . import notes as notes_module
 from . import patch as patch_module
 from . import platforms
+from . import scope as scope_module
 from . import version as version_module
 from .backends import get_backend
 from .download import Downloader, default_download_dir
@@ -46,6 +47,13 @@ from .logging_utils import get_logger
 from .verify import Verifier
 
 logger = get_logger("updater")
+
+# Formats installed by a package manager (or replaced as a single file):
+# never patched in place.
+PACKAGE_MANAGED_KINDS = (
+    platforms.KIND_MSI, platforms.KIND_DEB, platforms.KIND_RPM,
+    platforms.KIND_PKG, platforms.KIND_DMG, platforms.KIND_APPIMAGE,
+)
 
 
 @dataclass
@@ -121,6 +129,9 @@ class Updater:
         self.cancelled = False
 
         self.host = platforms.detect(config.get("app.executable", ""))
+        # Resolved once; the installers read it back to pick their mode.
+        self.scope = scope_module.detect(config, self.host.os_family)
+        config.set("meta.install_scope", self.scope)
         self.backend = get_backend(config)
         self.downloader = Downloader(
             session=self.backend.session,
@@ -337,6 +348,11 @@ class Updater:
         if self.host.running_as_appimage:
             self.detail("Patches skipped: an AppImage is replaced whole")
             return None
+        if check.asset_kind in PACKAGE_MANAGED_KINDS:
+            # Files a package manager owns must change through it, or its
+            # records (and its uninstall) stop matching what is on disk.
+            self.detail(f"Patches skipped: a {check.asset_kind} install is updated as a package")
+            return None
 
         try:
             plan = patch_module.plan_chain(
@@ -500,7 +516,7 @@ class Updater:
         the installer, so without this Apps & Features would keep showing the
         version the patches started from.
         """
-        key = self.config.get("patches.windows_uninstall_key", "")
+        key = scope_module.uninstall_key(self.config)
         if not key or self.host.os_family != "windows":
             return
         try:
@@ -509,7 +525,10 @@ class Updater:
             return
 
         display = version_module.strip_platform_suffix(version)
-        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        hives = [winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE]
+        if self.scope == scope_module.MACHINE:
+            hives.reverse()
+        for hive in hives:
             try:
                 with winreg.OpenKey(hive, key, 0, winreg.KEY_SET_VALUE) as handle:
                     winreg.SetValueEx(handle, "DisplayVersion", 0, winreg.REG_SZ, display)
@@ -629,7 +648,13 @@ class Updater:
         )
 
         installer = get_installer(self.config, self.host, log=self.detail)
-        result = installer.install(artifact, check.asset_kind)
+        try:
+            result = installer.install(artifact, check.asset_kind)
+        except UpdaterError:
+            # The installers leave the previous version in place on failure;
+            # bring the application back rather than leave it closed.
+            self.relaunch(messages)
+            raise
 
         self.status(f"Installed via {result.method}")
         messages.extend(result.notes)

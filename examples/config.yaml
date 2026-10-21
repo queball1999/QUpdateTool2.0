@@ -144,6 +144,20 @@ install:
     exe_interactive: []
     msi: ["/quiet", "/norestart"]
     msi_interactive: ["/passive"]
+    # Added to an .exe installer for a per-user or a machine-wide install. For an
+    # Inno Setup installer that allows both: ["/CURRENTUSER"] and ["/ALLUSERS"].
+    exe_user: []
+    exe_machine: []
+
+  # user | machine | auto. Decides elevation (machine always elevates) and which
+  # exe_user/exe_machine flags are used. auto reads the uninstall entry below,
+  # then whether the folder is under Program Files or writable. Apps that know
+  # how they were installed should pass --install-scope.
+  scope: auto
+
+  # Windows uninstall key (HKCU for a per-user install, HKLM for machine-wide).
+  # Used to detect the scope and to keep DisplayVersion right after a patch.
+  uninstall_key: ""
 
   # Where archive and AppImage releases are unpacked. Defaults to the
   # directory containing the executable.
@@ -167,9 +181,8 @@ patches:
   max_size_ratio: 0.9      # full installer instead if patches total more than this share of it
   verify: full             # full: hash every file after each patch; changed: only those written
   fallback_to_full: true   # a patch that cannot be applied falls back to the installer
-  # Windows: the uninstall key whose DisplayVersion follows patched versions,
-  # e.g. Software\Microsoft\Windows\CurrentVersion\Uninstall\{GUID}_is1 for Inno Setup.
-  windows_uninstall_key: ""
+  # The uninstall entry's DisplayVersion follows patched versions; set the key
+  # in install.uninstall_key (patches.windows_uninstall_key is the old name).
 
 process:
   # PID of the application to stop. Normally passed with --calling-pid.

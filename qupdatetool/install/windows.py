@@ -9,8 +9,10 @@ ones. A publisher can always override the flags in config.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -34,6 +36,8 @@ BACKUP_PREFIX = ".qupdate-backup-"
 # A backup that a failed rollback could not fully put back. Never removed
 # automatically: it holds the only copy of the files it lists.
 RESTORE_PREFIX = ".qupdate-restore-"
+# Suffix of the updater's own executable while an installer replaces it.
+SELF_ASIDE_SUFFIX = ".qupdate-old"
 
 
 class WindowsInstaller(Installer):
@@ -48,6 +52,10 @@ class WindowsInstaller(Installer):
         if kind == KIND_ZIP:
             return self.install_zip(artifact)
         return self.install_exe(artifact)
+
+    def install_root(self) -> Path | None:
+        target = self.config.get("install.target_dir", "") or self.config.install_dir
+        return Path(target) if target else None
 
     def detect_installer_family(self, artifact: Path) -> str:
         """
@@ -97,7 +105,14 @@ class WindowsInstaller(Installer):
                 args = list(INNO_SILENT)
             mode = f"silent ({family} flags)"
 
-        exit_code, output = self.run([artifact] + args)
+        scope = self.config.get("meta.install_scope", "") or "user"
+        scope_args = list((self.config.get("install.installer_args", {}) or {}).get(f"exe_{scope}") or [])
+        if scope_args:
+            args = args + scope_args
+            mode = f"{mode}, {scope} install"
+
+        with own_executable_aside(self.install_root(), self.log):
+            exit_code, output = self.run([artifact] + args)
 
         if exit_code not in SUCCESS_EXIT_CODES:
             self.fail(f"The installer failed (exit code {exit_code})", exit_code, output)
@@ -123,7 +138,8 @@ class WindowsInstaller(Installer):
 
         command = ["msiexec", "/i", str(artifact)] + args
 
-        exit_code, output = self.run(command)
+        with own_executable_aside(self.install_root(), self.log):
+            exit_code, output = self.run(command)
 
         if exit_code not in SUCCESS_EXIT_CODES:
             self.fail(f"msiexec failed (exit code {exit_code})", exit_code, output)
@@ -179,6 +195,61 @@ class WindowsInstaller(Installer):
             installed_path=str(target_dir),
             notes=[f"{copied} files updated"],
         )
+
+
+@contextlib.contextmanager
+def own_executable_aside(install_dir: Path | None, log=None, executable: str = ""):
+    """
+    Move this updater's own executable out of the way while an installer runs.
+
+    An application that ships the updater in its install folder runs it from
+    there, so the installer has to replace the very file that is running it.
+    Windows refuses to overwrite or delete a running executable - the
+    installer fails, or its restart manager closes the updater mid-install -
+    but it allows a rename. So the file is renamed first and the installer
+    finds the path free. If the installer does not put a new copy there, the
+    original is moved back. The renamed copy is deleted on the next run,
+    once nothing is running from it.
+    """
+    executable = Path(executable or sys.executable)
+    frozen = getattr(sys, "frozen", False) or bool(executable != Path(sys.executable))
+
+    inside = False
+    if frozen and install_dir:
+        try:
+            inside = Path(install_dir).resolve() in executable.resolve().parents
+        except OSError:
+            inside = False
+
+    if not inside:
+        yield
+        return
+
+    remove_stale_self_copies(executable.parent)
+    aside = executable.with_name(f"{executable.name}.{os.getpid()}{SELF_ASIDE_SUFFIX}")
+    try:
+        os.replace(executable, aside)
+    except OSError as exc:
+        if log:
+            log(f"Could not move {executable.name} aside: {exc}")
+        yield
+        return
+
+    if log:
+        log(f"Moved the running {executable.name} aside for the installer")
+    try:
+        yield
+    finally:
+        if not executable.exists():
+            with contextlib.suppress(OSError):
+                os.replace(aside, executable)
+
+
+def remove_stale_self_copies(folder: Path) -> None:
+    """Delete updater copies an earlier run moved aside; one still running is skipped."""
+    for entry in folder.glob(f"*{SELF_ASIDE_SUFFIX}"):
+        with contextlib.suppress(OSError):
+            entry.unlink()
 
 
 def check_archive_members(names: list) -> None:
