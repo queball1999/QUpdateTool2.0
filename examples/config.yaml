@@ -27,6 +27,15 @@ app:
     - MyAppHelper.exe
   support_url: https://example.com/support
 
+  # How the application runs. "none" stops and relaunches it by PID or
+  # executable (default). "systemd" stops it with `systemctl stop <unit>`
+  # before the install and starts it with `systemctl start <unit>` afterwards.
+  # Flags: --service-manager, --service-unit. The unit name must be letters,
+  # digits and : _ . @ - ending in .service. A systemctl failure or timeout
+  # exits 7.
+  service_manager: none
+  service_unit: ""
+
   # Defaults to the directory containing app.executable. Set this instead
   # when that directory isn't the real install root, e.g. a macOS .app
   # bundle mount point.
@@ -134,7 +143,9 @@ install:
 
   # auto    elevate only when the install directory is not writable
   # always  always request elevation
-  # never   never elevate; fail if the install needs it
+  # never   never call pkexec/sudo/UAC; exit 2 if the target is not writable
+  #         (flag --no-elevate). Use on headless devices that run the updater
+  #         as root, e.g. from a root systemd oneshot unit.
   elevate: auto
 
   # Flags passed to each installer type. The defaults target Inno Setup on
@@ -160,12 +171,26 @@ install:
   uninstall_key: ""
 
   # Where archive and AppImage releases are unpacked. Defaults to the
-  # directory containing the executable.
+  # directory containing the executable. A tarball or zip holding a single
+  # file (e.g. /usr/local/bin with a lone `pistation`) replaces just that
+  # file atomically, keeps the executable bit, and leaves the previous one as
+  # <file>.old. Other files in the directory are never touched.
   target_dir: ""
 
   # Where the download is staged. Defaults to a temporary directory.
   download_dir: ""
   keep_download: false
+
+# Post-install health check. After the application has been started the updater
+# polls health.url; HTTP 200 is success. If it fails `attempts` times within
+# `window_seconds`, every file is restored from its .old backup, the service is
+# restarted, the rollback is logged, and the updater exits 5. Rollback needs the
+# single-file install above. Leave url blank to skip the check (default).
+# Flags: --health-url, --health-attempts, --health-window-seconds.
+health:
+  url: ""                  # e.g. http://127.0.0.1/healthz
+  attempts: 3
+  window_seconds: 60
 
 # Patch updates: download only the files that changed instead of the whole
 # installer. A release publishes one or more <stem>.from-<tag>.qpatch assets

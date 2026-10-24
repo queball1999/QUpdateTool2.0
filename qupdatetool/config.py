@@ -46,6 +46,16 @@ ENV_OVERRIDES = {
     "QUPDATE_LOG_LEVEL": "logging.level",
 }
 
+# A systemd unit name: starts with a letter or digit (so it can never look like
+# a command-line option), then letters, digits and the characters systemd allows
+# in names, and ends in .service (matched with fullmatch, so a trailing newline
+# is refused). Anything else is refused before it is handed
+# to systemctl.
+UNIT_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9:_.@\-]{0,200}\.service")
+
+# Values accepted for app.service_manager. "" means the same as "none".
+SERVICE_MANAGERS = ("none", "systemd")
+
 # Filenames searched for when --config is not given.
 CONFIG_FILENAMES = ("qupdate.yaml", "qupdate.yml", "config.yaml", "config.yml", "update.yaml")
 
@@ -57,6 +67,8 @@ DEFAULTS = {
         "executable": "",               # path to the parent binary
         "install_dir": "",              # derived from executable when blank
         "process_names": [],            # extra process names to stop
+        "service_manager": "none",      # none | systemd: how the app is stopped and started
+        "service_unit": "",             # systemd unit name, e.g. pistation.service
         "support_url": "",
         "icon": "",                     # filename only, for display/debug
         "icon_data": "",                # base64-embedded icon bytes (branded builds)
@@ -114,6 +126,11 @@ DEFAULTS = {
         "keep_download": False,
         "download_dir": "",
     },
+    "health": {
+        "url": "",                      # polled after the app starts; blank disables the check
+        "attempts": 3,                  # tries before the update is rolled back
+        "window_seconds": 60,           # all attempts happen within this many seconds
+    },
     "patches": {
         "enabled": False,               # use .qpatch assets when a release publishes them
         "pattern": "",                  # regex a patch asset name must match
@@ -159,6 +176,24 @@ DEFAULTS = {
         "yes": False,
     },
 }
+
+
+def validate_unit_name(unit: str) -> str:
+    """
+    Return a systemd unit name if it is safe to pass to systemctl.
+
+    The name is only ever used as one element of an argument list, never
+    through a shell, but it is still held to a strict pattern so a hostile or
+    mistyped value cannot become an option or a path. Raises ConfigError.
+    """
+    text = str(unit or "")
+    if not UNIT_NAME_PATTERN.fullmatch(text):
+        raise ConfigError(
+            f"Invalid systemd unit name: {text!r}",
+            "Use letters, digits and : _ . @ - only, ending in .service "
+            "(for example pistation.service)",
+        )
+    return text
 
 
 def deep_merge(base: dict, overlay: dict) -> dict:
@@ -373,6 +408,9 @@ class Config:
                 "Expected one of: auto, user, machine",
             )
 
+        self.validate_service()
+        self.validate_health()
+
         verify = (self.get("patches.verify") or "").lower()
         if verify not in ("full", "changed"):
             raise ConfigError(
@@ -408,6 +446,43 @@ class Config:
                 "Signature verification is required but no public key is configured",
                 "Bake a key into the brand, set security.public_key_file, "
                 "or pass --no-require-signature to accept unsigned releases",
+            )
+
+    def validate_service(self) -> None:
+        """Check app.service_manager and app.service_unit for consistency."""
+        manager = (self.get("app.service_manager") or "none").lower()
+        if manager not in SERVICE_MANAGERS:
+            raise ConfigError(
+                f"Unknown service manager: {manager}",
+                "Expected one of: none, systemd",
+            )
+        if manager == "systemd":
+            unit = self.get("app.service_unit", "")
+            if not unit:
+                raise ConfigError(
+                    "app.service_manager is systemd but no unit is configured",
+                    "Set app.service_unit or pass --service-unit pistation.service",
+                )
+            validate_unit_name(unit)
+
+    def validate_health(self) -> None:
+        """Check the health.* settings when a health URL is configured."""
+        url = str(self.get("health.url", "") or "")
+        try:
+            attempts = int(self.get("health.attempts", 3))
+            window = int(self.get("health.window_seconds", 60))
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                "health.attempts and health.window_seconds must be whole numbers"
+            ) from exc
+        if attempts < 1 or window < 1:
+            raise ConfigError(
+                "health.attempts and health.window_seconds must be at least 1"
+            )
+        if url and not url.lower().startswith(("http://", "https://")):
+            raise ConfigError(
+                f"health.url must be an http or https URL: {url}",
+                "For example http://127.0.0.1/healthz",
             )
 
 

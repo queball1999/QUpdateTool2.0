@@ -22,7 +22,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .errors import InstallError
+from .errors import ConfigError, InstallError
 
 
 def is_elevated() -> bool:
@@ -84,6 +84,28 @@ def needs_elevation(config, install_dir: str | os.PathLike | None, scope: str = 
         return False
 
     return not can_write(install_dir)
+
+
+def require_writable_without_elevation(config, install_dir: str | os.PathLike | None) -> None:
+    """
+    Fail early when elevation is disabled and the target is not writable.
+
+    With install.elevate set to "never" the updater must not call pkexec,
+    sudo or UAC, so an unwritable install location can only be reported. The
+    message points at the usual fix for a headless device: run the updater as
+    root, for example from a root systemd oneshot unit. Raises ConfigError
+    (exit code 2). Does nothing for any other elevation mode.
+    """
+    mode = (config.get("install.elevate") or "auto").lower()
+    if mode != "never" or not install_dir:
+        return
+
+    if not can_write(install_dir):
+        raise ConfigError(
+            f"Cannot write to {install_dir} and elevation is disabled (install.elevate: never)",
+            "Run the updater as root, for example from a root systemd oneshot unit, "
+            "or make the directory writable for the updater user",
+        )
 
 
 def relaunch_elevated(extra_args: tuple = (), log=None) -> int:

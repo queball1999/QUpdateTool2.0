@@ -271,6 +271,20 @@ class LinuxInstaller(Installer):
             entries = list(staging.iterdir())
             source = entries[0] if len(entries) == 1 and entries[0].is_dir() else staging
 
+            single = single_regular_file(source)
+            if single is not None:
+                # One file (for example the pistation binary): replace only
+                # that file, atomically, and keep the previous one as .old.
+                destination = target_dir / single.name
+                backup = replace_file_atomic(single, destination, log=self.log)
+                return InstallResult(
+                    success=True,
+                    method="single file replaced atomically",
+                    installed_path=str(destination),
+                    notes=["1 file updated"],
+                    backups=[(destination, backup)] if backup else [],
+                )
+
             copied = copy_tree(source, target_dir, log=self.log)
 
         return InstallResult(
@@ -279,6 +293,115 @@ class LinuxInstaller(Installer):
             installed_path=str(target_dir),
             notes=[f"{copied} files updated"],
         )
+
+
+def single_regular_file(directory: Path) -> Path | None:
+    """
+    Return the file if `directory` holds exactly one regular file and nothing else.
+
+    Symbolic links, empty folders and nested files all disqualify the
+    directory, so only a plain single-file release takes the atomic path and
+    everything else keeps going through copy_tree.
+    """
+    entries = list(directory.rglob("*"))
+    if len(entries) != 1:
+        return None
+    entry = entries[0]
+    if entry.parent != directory or entry.is_symlink() or not entry.is_file():
+        return None
+    return entry
+
+
+def fsync_directory(directory: Path) -> None:
+    """
+    Flush a directory entry to disk so a rename survives a power cut.
+
+    Best effort: platforms that cannot open a directory (Windows) are skipped,
+    because there the rename is the strongest guarantee available.
+    """
+    flags = getattr(os, "O_DIRECTORY", None)
+    if flags is None:
+        return
+    descriptor = os.open(directory, os.O_RDONLY | flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def keep_backup(destination: Path, backup: Path) -> None:
+    """
+    Make `backup` a copy of `destination` without ever leaving a gap.
+
+    A hard link is used when the filesystem allows it: it is instant and
+    atomic, and the old inode stays intact after the new file is renamed over
+    `destination`. Otherwise the file is copied to a temporary name and
+    renamed into place. Either way an older backup is replaced atomically.
+    """
+    scratch = backup.with_name(backup.name + ".tmp")
+    scratch.unlink(missing_ok=True)
+    try:
+        try:
+            os.link(destination, scratch)
+        except OSError:
+            shutil.copy2(destination, scratch)
+        os.replace(scratch, backup)
+    except OSError:
+        scratch.unlink(missing_ok=True)
+        raise
+
+
+def replace_file_atomic(source: Path, destination: Path, log=None) -> Path | None:
+    """
+    Replace one file atomically, keeping the previous version as `<name>.old`.
+
+    The new content is written to a temporary file in the same directory (so
+    the final rename never crosses a filesystem), flushed with fsync, given
+    the source file's mode plus any executable bits the old file had, and then
+    renamed over the destination. Other files in the directory are never
+    touched. Returns the backup path, or None when there was nothing to back
+    up. Raises InstallError on failure, leaving the previous file in place.
+    """
+    directory = destination.parent
+    backup = destination.with_name(destination.name + ".old")
+    temp_path = None
+
+    try:
+        handle, name = tempfile.mkstemp(dir=directory, prefix=".qupdate-new-")
+        temp_path = Path(name)
+        with os.fdopen(handle, "wb") as out, open(source, "rb") as src:
+            shutil.copyfileobj(src, out)
+            out.flush()
+            os.fsync(out.fileno())
+
+        mode = stat.S_IMODE(source.stat().st_mode)
+        existed = destination.exists()
+        if existed:
+            # A zip drops the executable bit; keep whatever the old file had.
+            mode |= stat.S_IMODE(destination.stat().st_mode) & 0o111
+        os.chmod(temp_path, mode)
+
+        if existed:
+            keep_backup(destination, backup)
+            if log:
+                log(f"Kept previous version as {backup}")
+
+        os.replace(temp_path, destination)
+        temp_path = None
+        fsync_directory(directory)
+    except OSError as exc:
+        raise InstallError(
+            f"Could not replace {destination.name}",
+            f"{exc}. The previous file was left in place",
+        ) from exc
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+    if log:
+        log(f"Replaced {destination}")
+
+    return backup if existed else None
 
 
 def extract_tar_safely(archive: tarfile.TarFile, destination: Path) -> None:

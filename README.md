@@ -159,11 +159,73 @@ carry artifacts for every platform and each host picks the right one.
 | Running as an AppImage | AppImage, tarball |
 | Other Linux | AppImage, tarball, then native packages |
 | macOS | `.dmg`, `.pkg`, `.zip`, tarball |
+| Raspberry Pi OS (Debian) | `.deb`, AppImage, tarball; `armv6` for armv6l, `armv7` then `armv6` for armv7l |
 
 If a release does not yet publish a format, selection falls through to the
 next one. An application shipping only `.deb` today keeps working unchanged
 when it starts publishing `.rpm` and `.AppImage` tomorrow - no updater change
 is needed, because the host detection already looks for them.
+
+## Updating a systemd service on Linux (e.g. Raspberry Pi)
+
+For a headless service such as PiStation on a Raspberry Pi Zero W, run the
+updater from source as root (for example from a systemd oneshot unit). It
+needs only Debian packages: `sudo apt install python3-requests python3-yaml
+python3-psutil python3-cryptography` (cryptography 38 on bookworm is enough).
+PySide6 is never imported without a display.
+
+```yaml
+app:
+  name: PiStation
+  current_version: "1.2.2"          # or pass --current-version
+  service_manager: systemd          # stop/start with systemctl, not by PID
+  service_unit: pistation.service
+source:
+  provider: github
+  repo: owner/pistation
+security:
+  public_key_file: /etc/pistation/release-key.asc
+install:
+  elevate: never                    # never call pkexec/sudo; run as root instead
+  target_dir: /usr/local/bin        # a tarball holding only `pistation` replaces that file
+health:
+  url: http://127.0.0.1/healthz     # HTTP 200 means the new version is healthy
+  attempts: 3
+  window_seconds: 60
+```
+
+```bash
+sudo python3 -m qupdatetool --config /etc/pistation/updater.yaml
+# or with flags only
+sudo python3 -m qupdatetool --service-manager systemd --service-unit pistation.service     --no-elevate --target-dir /usr/local/bin --health-url http://127.0.0.1/healthz
+```
+
+What happens:
+
+1. The release asset is chosen by architecture: `armv6` for a Zero W, `armv7`
+   (or `armv6` if there is no armv7 asset) for a Zero 2 W on a 32-bit OS,
+   `arm64` and `amd64` elsewhere, e.g. `pistation-v1.2.3-linux-armv6.tar.gz`.
+2. It is downloaded and signature-verified before anything is touched.
+3. `systemctl stop pistation.service`, then the tarball's single file is
+   written to a temporary name in the same directory, fsynced, and renamed
+   over `pistation`. The executable bit is kept, the previous binary stays as
+   `pistation.old`, and no other file in `target_dir` is touched.
+4. `systemctl start pistation.service`, then `health.url` is polled
+   (`attempts` tries spread over `window_seconds`). HTTP 200 is success.
+5. If it never answers 200, `pistation.old` is moved back, the service is
+   restarted, the rollback is logged, and the updater exits 5. Rollback only
+   works for single-file installs; archives with several files keep no backup.
+
+With `install.elevate: never` an unwritable `target_dir` fails immediately with
+exit code 2 and a message to run as root. A `systemctl` failure or timeout
+exits 7. Unit names are validated (letters, digits, `: _ . @ -`, ending in
+`.service`) and `systemctl` is run as a list, never through a shell.
+
+`--check-only --json` prints these keys on stdout (exit 10 = update available,
+11 = up to date): `update_available`, `current_version`, `latest_version`,
+`tag`, `published_at`, `url`, `asset`, `asset_kind`, `asset_size`, `platform`,
+`notes_title`, `notes`, `notes_source`, `reason`, `update_method`,
+`download_size`, `patches`. Status and log lines go to stderr.
 
 ## Patch updates
 
@@ -262,7 +324,8 @@ qupdatetool/
   verify.py         the checksum + signature chain
   patch.py          .qpatch format: build, plan a chain, apply all or nothing
   download.py       streaming downloads with progress
-  process.py        stopping and relaunching the parent app
+  process.py        stopping and relaunching the parent app (PID or systemd)
+  health.py         post-install HTTP health check
   elevate.py        UAC / pkexec / sudo elevation
   platforms.py      host detection and artifact preference
   notes.py          release notes from notices / changelog / release body

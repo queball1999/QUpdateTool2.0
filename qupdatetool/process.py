@@ -11,12 +11,14 @@ where the installer fails because the old binary is still mapped.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+from .config import validate_unit_name
 from .errors import ProcessError
 
 try:
@@ -162,6 +164,72 @@ def wait_for_unlock(path: str | os.PathLike, timeout: int = 30, log=None) -> boo
     return False
 
 
+def service_mode(config) -> bool:
+    """Return True when the app is managed by systemd rather than by PID."""
+    return (config.get("app.service_manager") or "none").lower() == "systemd"
+
+
+def run_systemctl(action: str, unit: str, timeout: int = 30, log=None) -> None:
+    """
+    Run `systemctl <action> <unit>` and raise ProcessError on any failure.
+
+    The command is built as a list and never goes through a shell, and the
+    unit name is validated first. --no-ask-password stops systemctl waiting
+    on a polkit prompt nobody can answer in a headless session. A timeout, a
+    missing systemctl, and a non-zero exit all map to ProcessError (exit 7).
+    """
+    unit = validate_unit_name(unit)
+
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        raise ProcessError(
+            "systemctl was not found",
+            f"cannot {action} {unit}; service_manager is systemd but this system has no systemctl",
+        )
+
+    command = [systemctl, "--no-ask-password", action, unit]
+    if log:
+        log(f"Running: {' '.join(command)}")
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ProcessError(
+            f"systemctl {action} {unit} did not finish in time",
+            f"timed out after {timeout} seconds",
+        ) from exc
+    except OSError as exc:
+        raise ProcessError(f"Could not run systemctl {action} {unit}", str(exc)) from exc
+
+    if result.returncode != 0:
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        raise ProcessError(
+            f"systemctl {action} {unit} failed (exit {result.returncode})",
+            output[-600:] if output else "no output",
+        )
+
+
+def stop_service(config, log=None) -> list:
+    """Stop the configured systemd unit and return its name in a list."""
+    unit = config.get("app.service_unit", "")
+    timeout = int(config.get("process.stop_timeout", 30))
+    run_systemctl("stop", unit, timeout=timeout, log=log)
+    return [unit]
+
+
+def start_service(config, log=None) -> None:
+    """Start the configured systemd unit."""
+    unit = config.get("app.service_unit", "")
+    timeout = int(config.get("process.stop_timeout", 30))
+    run_systemctl("start", unit, timeout=timeout, log=log)
+
+
 def stop_parent(config, log=None) -> list:
     """
     Stop the parent application described by the configuration.
@@ -171,6 +239,9 @@ def stop_parent(config, log=None) -> list:
     """
     if not config.get("process.stop_parent", True):
         return []
+
+    if service_mode(config):
+        return stop_service(config, log=log)
 
     pid = int(config.get("process.calling_pid", 0) or 0)
     names = tuple(config.get("app.process_names", []) or ())
@@ -220,6 +291,10 @@ def relaunch(config, log=None) -> bool:
     """
     if not config.get("process.relaunch", True):
         return False
+
+    if service_mode(config):
+        start_service(config, log=log)
+        return True
 
     command = list(config.get("process.relaunch_command", []) or [])
 

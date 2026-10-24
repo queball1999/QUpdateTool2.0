@@ -36,6 +36,9 @@ class InstallResult:
     installed_path: str = ""
     requires_restart: bool = False
     notes: list = field(default_factory=list)
+    # (installed path, backup path) for each file replaced with a kept backup.
+    # The health-check rollback restores these; empty when no backup exists.
+    backups: list = field(default_factory=list)
 
 
 class Installer:

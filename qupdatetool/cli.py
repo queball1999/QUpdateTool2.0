@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from . import __version__, app_settings, integrity, logging_utils
@@ -27,6 +28,11 @@ SIMPLE_FLAG_PATHS = {
     "publisher": "app.publisher",
     "current_version": "app.current_version",
     "executable": "app.executable",
+    "service_manager": "app.service_manager",
+    "service_unit": "app.service_unit",
+    "health_url": "health.url",
+    "health_attempts": "health.attempts",
+    "health_window_seconds": "health.window_seconds",
     "install_dir": "app.install_dir",
     "support_url": "app.support_url",
     "provider": "source.provider",
@@ -101,6 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
     application.add_argument("--process-name", action="append", metavar="NAME",
                              dest="process_names",
                              help="Process name to stop; may be repeated")
+    application.add_argument("--service-manager", choices=["none", "systemd"],
+                             help="How the application runs. With systemd it is stopped and "
+                                  "started with systemctl instead of by PID")
+    application.add_argument("--service-unit", metavar="UNIT",
+                             help="systemd unit to stop and start, e.g. pistation.service "
+                                  "(used with --service-manager systemd)")
     application.add_argument("--support-url", metavar="URL", help="Support URL shown on failure")
 
     source = parser.add_argument_group("release source")
@@ -161,6 +173,10 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Shorthand for --install-mode interactive")
     install_group.add_argument("--elevate", choices=["auto", "always", "never"],
                                help="When to request administrator privileges")
+    install_group.add_argument("--no-elevate", action="store_true",
+                               help="Never call pkexec, sudo or UAC. Fail with exit code 2 if the "
+                                    "target is not writable. Same as --elevate never; use it for "
+                                    "headless devices where the updater runs as root")
     install_group.add_argument("--install-scope", choices=["auto", "user", "machine"],
                                help="Whether the app was installed for this user or the whole "
                                     "machine; decides elevation and the installer mode")
@@ -172,6 +188,15 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Do not delete the artifact after installing")
     install_group.add_argument("--already-elevated", action="store_true",
                                help=argparse.SUPPRESS)
+
+    health_group = parser.add_argument_group("post-install health check")
+    health_group.add_argument("--health-url", metavar="URL",
+                              help="After the application starts, poll this URL; HTTP 200 means "
+                                   "healthy. If it never is, the update is rolled back (exit 5)")
+    health_group.add_argument("--health-attempts", type=int, metavar="N",
+                              help="Health check tries before rolling back")
+    health_group.add_argument("--health-window-seconds", type=int, metavar="SECONDS",
+                              help="All health check tries happen within this many seconds")
 
     patch_group = parser.add_argument_group("patch updates")
     patch_group.add_argument("--patches", action="store_true",
@@ -286,6 +311,10 @@ def collect_overrides(args, parser) -> dict:
 
     if args.interactive:
         assign("install.mode", "interactive")
+
+    # Applied after the simple flags so --no-elevate wins over --elevate.
+    if args.no_elevate:
+        assign("install.elevate", "never")
 
     if args.keep_download:
         assign("install.keep_download", True)
@@ -443,6 +472,15 @@ def main(argv: list | None = None) -> int:
         if elevated_exit is not None:
             return elevated_exit
 
+        if config.get("ui.gui", False) and headless_session():
+            # PySide6 must never be imported without a display: it can abort
+            # the process. Fall back to the console flow instead.
+            logging_utils.get_logger().warning(
+                "A graphical window was requested but no display is available; "
+                "running headless"
+            )
+            config.set("ui.gui", False)
+
         if config.get("ui.gui", False):
             from .ui.app import run_gui
 
@@ -458,6 +496,18 @@ def main(argv: list | None = None) -> int:
         logging_utils.get_logger().exception("Unhandled error")
         print(f"Unexpected error: {exc}", file=sys.stderr)
         return ExitCode.ERROR
+
+
+def headless_session() -> bool:
+    """
+    Return True on a Linux session with no display server.
+
+    Neither DISPLAY nor WAYLAND_DISPLAY is set on a headless device such as a
+    Raspberry Pi running the updater from systemd.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def run_console(config, args) -> int:
@@ -569,6 +619,18 @@ def elevate_first(config, args) -> int | None:
 
     if (args.check_only or getattr(args, "already_elevated", False)
             or config.get("meta.dry_run", False)):
+        return None
+
+    if (config.get("install.elevate") or "auto").lower() == "never":
+        # Never prompt. The only possible outcome is to proceed or to fail
+        # with a clear message when the target cannot be written.
+        target = config.get("install.target_dir", "") or config.install_dir
+        try:
+            elevate.require_writable_without_elevation(config, target)
+        except UpdaterError as exc:
+            print(f"Update failed: {exc}", file=sys.stderr)
+            logging_utils.get_logger("elevate").error("Update failed: %s", exc)
+            return exc.exit_code
         return None
 
     host = platforms.detect(config.get("app.executable", ""))

@@ -54,7 +54,17 @@ ARCH_ALIASES = {
     "x86_64": ("x86_64", "x86-64", "amd64", "x64", "win64", "64bit"),
     "aarch64": ("aarch64", "arm64", "armv8", "apple-silicon", "silicon"),
     "armv7l": ("armv7l", "armv7", "armhf", "arm32"),
+    # 32-bit ARMv6: Raspberry Pi Zero W and Pi 1. Kept distinct from armv7l
+    # because an ARMv7 binary does not run on an ARMv6 core.
+    "armv6l": ("armv6l", "armv6", "armel", "armv6hf"),
     "i386": ("i386", "i686", "win32", "32bit"),
+}
+
+# Architectures whose binaries also run on a given host, tried in order after
+# the host's own. A 32-bit OS on a Pi Zero 2 W reports armv7l, and an ARMv6
+# build runs there, so it is a valid fallback when no ARMv7 asset exists.
+ARCH_FALLBACKS = {
+    "armv7l": ("armv6l",),
 }
 
 # Words in an asset filename that identify the OS it targets.
@@ -114,6 +124,16 @@ def normalise_arch(text: str) -> str:
         if lowered in aliases:
             return canonical
     return lowered or "x86_64"
+
+
+def arch_chain(arch: str) -> list:
+    """
+    Return the architectures a host can run, most specific first.
+
+    The host's own architecture leads, followed by any compatible fallbacks
+    from ARCH_FALLBACKS (for example armv7l then armv6l).
+    """
+    return [arch, *ARCH_FALLBACKS.get(arch, ())]
 
 
 def host_arch() -> str:

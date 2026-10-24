@@ -31,9 +31,11 @@ signing key.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import health as health_module
 from . import notes as notes_module
 from . import patch as patch_module
 from . import platforms
@@ -41,7 +43,14 @@ from . import scope as scope_module
 from . import version as version_module
 from .backends import get_backend
 from .download import Downloader, default_download_dir
-from .errors import CancelledError, ConfigError, NoReleaseError, UpdaterError
+from .errors import (
+    CancelledError,
+    ConfigError,
+    InstallError,
+    NoReleaseError,
+    ProcessError,
+    UpdaterError,
+)
 from .install import get_installer
 from .logging_utils import get_logger
 from .verify import Verifier
@@ -284,14 +293,21 @@ class Updater:
         ]
 
         if self.config.get("assets.match_arch", True):
-            arch_matched = [
-                asset for asset in plausible
-                if platforms.asset_matches_arch(asset.name, self.host.arch)
-            ]
             # Only apply the architecture filter if it leaves something; a
             # release with no arch in its filenames must not filter to empty.
-            if arch_matched:
-                plausible = arch_matched
+            # Compatible fallbacks are tried in order (armv7l then armv6l),
+            # so a Pi Zero 2 W on a 32-bit OS can take an armv6 asset when
+            # the release ships no armv7 one.
+            for arch in platforms.arch_chain(self.host.arch):
+                arch_matched = [
+                    asset for asset in plausible
+                    if platforms.asset_matches_arch(asset.name, arch)
+                ]
+                if arch_matched:
+                    if arch != self.host.arch:
+                        self.detail(f"No {self.host.arch} asset; falling back to {arch}")
+                    plausible = arch_matched
+                    break
 
         if not plausible:
             raise NoReleaseError(
@@ -659,7 +675,24 @@ class Updater:
         self.status(f"Installed via {result.method}")
         messages.extend(result.notes)
 
-        relaunched = self.relaunch(messages) if result.success else False
+        relaunched = False
+        if result.success:
+            try:
+                # A systemd unit that will not start is a hard failure (exit 7);
+                # for a plain relaunch it stays a warning.
+                relaunched = self.relaunch(messages, strict=process_module.service_mode(self.config))
+            except ProcessError as exc:
+                if self.health_enabled():
+                    try:
+                        self.roll_back(result, messages, f"the service did not start: {exc}")
+                    except InstallError as rollback_error:
+                        # Already logged in full; the start failure is still
+                        # the error reported (exit code 7).
+                        self.detail(f"Rollback after failed start: {rollback_error}")
+                raise
+
+            if self.health_enabled():
+                self.check_health(result, messages)
 
         return UpdateOutcome(
             success=result.success,
@@ -671,13 +704,98 @@ class Updater:
             messages=messages,
         )
 
-    def relaunch(self, messages: list) -> bool:
-        """Start the parent application again, noting a failure in `messages`."""
+    def health_enabled(self) -> bool:
+        """Return True when a post-install health check is configured."""
+        url, _, _ = health_module.settings(self.config)
+        return bool(url)
+
+    def check_health(self, result, messages: list) -> None:
+        """
+        Poll the health URL after the application has been started.
+
+        On failure the previous files are restored and the application is
+        restarted (see roll_back), then InstallError is raised so the process
+        exits with code 5.
+        """
+        url, attempts, window = health_module.settings(self.config)
+        self.status(f"Checking {url} (up to {attempts} attempts in {window} seconds)")
+
+        healthy = health_module.wait_until_healthy(
+            url, attempts, window, log=self.detail
+        )
+        if healthy:
+            self.status("Health check passed")
+            messages.append(f"Health check passed at {url}")
+            return
+
+        self.roll_back(result, messages, f"{url} did not return HTTP 200 in {attempts} attempts")
+
+    def roll_back(self, result, messages: list, reason: str) -> None:
+        """
+        Restore every file from its .old backup and restart the application.
+
+        Always raises InstallError (exit code 5): the update did not take
+        effect, whether or not the rollback itself worked. Failures while
+        stopping or restarting are logged in full and do not stop the file
+        restore, which is the part that matters.
+        """
+        from . import process as process_module
+
+        logger.error("Update failed (%s); rolling back", reason)
+        self.status("Update failed its health check; restoring the previous version")
+
+        if not result.backups:
+            logger.error("No backups were kept for this install type, so it cannot be rolled back")
+            raise InstallError(
+                "The update failed and cannot be rolled back",
+                f"{reason}. This install type keeps no backup files",
+            )
+
+        try:
+            process_module.stop_parent(self.config, log=self.detail)
+        except UpdaterError as exc:
+            logger.error("Could not stop the application before rollback: %s", exc)
+
+        failures = []
+        for destination, backup in result.backups:
+            try:
+                os.replace(backup, destination)
+                logger.info("Restored %s from %s", destination, backup)
+            except OSError as exc:
+                logger.error("Could not restore %s from %s: %s", destination, backup, exc)
+                failures.append(f"{destination}: {exc}")
+
+        try:
+            process_module.relaunch(self.config, log=self.detail)
+        except UpdaterError as exc:
+            logger.error("Could not restart the application after rollback: %s", exc)
+            failures.append(f"restart: {exc}")
+
+        if failures:
+            raise InstallError(
+                "The update failed and the rollback was incomplete",
+                f"{reason}. Problems: " + "; ".join(failures),
+            )
+
+        logger.error("Rolled back to the previous version")
+        raise InstallError(
+            "The update failed its health check and was rolled back",
+            reason,
+        )
+
+    def relaunch(self, messages: list, strict: bool = False) -> bool:
+        """
+        Start the parent application again, noting a failure in `messages`.
+
+        With `strict` a failure is raised as well (used for systemd units).
+        """
         from . import process as process_module
 
         try:
             relaunched = process_module.relaunch(self.config, log=self.detail)
         except UpdaterError as exc:
+            if strict:
+                raise
             # The update itself succeeded; failing to relaunch is worth
             # reporting but must not be reported as a failed update.
             logger.warning("Could not relaunch: %s", exc)
